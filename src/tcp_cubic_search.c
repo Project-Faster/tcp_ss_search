@@ -81,7 +81,7 @@ MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (
 
 
 //////////////////////// SEARCH ////////////////////////
-/** 
+/**
    disable search with command:
  		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/search"
    enable search with command:
@@ -91,7 +91,7 @@ MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (
 */
 
 #define SEARCH_BINS 10		/* Number of bins in a window */
-#define SEARCH_TOTAL_BINS 25 	/* Total number of bins containing essential 
+#define SEARCH_TOTAL_BINS 25 	/* Total number of bins containing essential
 				   bins to cover RTT shift */
 #define NOT_LOG_ONLY 1		/* Search is enabled and change the congestion window */
 
@@ -100,11 +100,6 @@ static int search_window_size_time __read_mostly = 35;
 static int search_thresh __read_mostly = 35;
 static int set_cwnd __read_mostly = 1;
 static int do_intpld __read_mostly = 1;
-
-#ifdef SEARCH_DEBUG
-static int search_logging __read_mostly = 1;
-static short debug_port __read_mostly = 5201;
-#endif /* SEARCH_DEBUG  */
 
 // Module parameters used by SEARCH
 module_param(search, int, 0644);
@@ -117,13 +112,6 @@ module_param(set_cwnd, int, 0644);
 MODULE_PARM_DESC(set_cwnd, "Decrease the cwnd to its value in 2 initial RTT ago");
 module_param(do_intpld, int, 0644);
 MODULE_PARM_DESC(do_intpld, "Do interpolation for calculating previous delivered bytes window");
-
-#ifdef SEARCH_DEBUG
-module_param(search_logging, int, 0644);
-MODULE_PARM_DESC(search_logging, "Enable log messages 1: enable logging, 0: disable logging");
-module_param(debug_port, short, 0644);
-MODULE_PARM_DESC(debug_port, "for debug usage");
-#endif /* SEARCH_DEBUG  */
 
 /* BIC TCP Parameters */
 struct bictcp {
@@ -170,7 +158,7 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->ack_cnt = 0;
 	ca->tcp_cwnd = 0;
 	ca->found = 0;
-	//////////////////////// SEARCH ////////////////////////
+	/* SEARCH related CA variables */
 	memset(ca->bin, 0, sizeof(ca->bin));
 	ca->bin_duration_us = 0;
 	ca->bin_total = 0;
@@ -178,7 +166,6 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->stop_search = 0;
 	ca->prev_bytes_acked = 0;
 	ca->not_enough_bin = 0;
-	////////////////////////////////////////////////////////
 }
 
 static inline u32 bictcp_clock_us(const struct sock *sk)
@@ -483,11 +470,9 @@ static void hystart_update(struct sock *sk, u32 delay)
 
 			if ((s32)(now - ca->round_start) > threshold) {
 				ca->found = 1;
-#ifdef SEARCH_DEBUG
 				pr_debug("hystart_ack_train (%u > %u) delay_min %u (+ ack_delay %u) cwnd %u\n",
 					 now - ca->round_start, threshold,
 					 ca->delay_min, hystart_ack_delay(sk), tp->snd_cwnd);
-#endif /* SEARCH_DEBUG */
 				NET_INC_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTTRAINDETECT);
 				NET_ADD_STATS(sock_net(sk),
@@ -518,15 +503,6 @@ static void hystart_update(struct sock *sk, u32 delay)
 		}
 	}
 }
-
-#ifdef DEDUG
-//////////////////////// SEARCH ////////////////////////
-static inline void search_print_header(struct bictcp *ca)
-{
-	printk(KERN_INFO "[CCRG]: [flow pointer: 0x%p] ",
-		ca);
-}
-#endif 
 
 // function to update missed bins
 static void search_update_missed_bins(struct sock *sk)
@@ -595,16 +571,6 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 
 		ca->stop_search = 1;
 		tp->snd_ssthresh = tp->snd_cwnd;
-#ifdef SEARCH_DEBUG
-		// Log exit condition met and updated congestion window
-		search_print_header(ca);
-		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met [cwnd %u] [ssthresh %u]\n", bictcp_clock_us(sk), tp->snd_cwnd, tp->snd_ssthresh);
-
-	} else {
-		// Logging exit condition met
-		search_print_header(ca);
-		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met without parameter changes]\n", bictcp_clock_us(sk), now_us);
-#endif /* SEARCH_DEBUG */
 	}
 }
 
@@ -629,41 +595,6 @@ static u64 search_interpolate_delivered_bytes(struct sock *sk, u32 rtt_us, u32 c
 
 	return interpolated_delv_bytes;
 }
-
-#ifdef SEARCH_DEBUG 
-// Function to log SEARCH analysis information
-static void search_log_info(struct sock *sk, u32 rtt_us, u64 curr_delv_bytes, u64 prev_delv_bytes, s32 norm_diff)
-{
-	struct bictcp *ca = inet_csk_ca(sk);
-
-	u32 now_us = bictcp_clock_us(sk);
-
-	if (ntohs(inet_sk(sk)->inet_dport) != debug_port && ntohs(inet_sk(sk)->inet_sport) != debug_port)
-		return;
-
-	search_print_header(ca);
-	printk(KERN_CONT "SEARCH_INFO: [now %u] [bin_duration %u] [rtt %u] [curr_delv %llu] [prev_delv %llu] [norm_100 %d] [not_enough_bins %u]\n",
-	  now_us, ca->bin_duration_us, rtt_us, curr_delv_bytes, prev_delv_bytes, norm_diff, ca->not_enough_bin);
-}
-
-// Function to log ACK analysis information
-static void search_log_ack_info(struct sock *sk, u32 rtt_us, u8 slow_start_status)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct bictcp *ca = inet_csk_ca(sk);
-
-	u32 now_us = bictcp_clock_us(sk);
-
-	if (ntohs(inet_sk(sk)->inet_dport) != debug_port && ntohs(inet_sk(sk)->inet_sport) != debug_port)
-		return;
-
-	search_print_header(ca);
-	printk(KERN_CONT "ACK_FUNC_INFO: [now %u] [total_byte_acked %llu] [total_byte_sent %llu] [rtt_ms %lu] [num_lost %u] [total_retrans %u] [retrans %u] [cwnd_pkt %u] [ssthresh %u] [mss %u] [ss_status %u]\n",
-		now_us, tp->bytes_acked, tp->bytes_sent, rtt_us / USEC_PER_MSEC, tp->lost_out, tp->total_retrans, tp->retrans_out, tp->snd_cwnd, tp->snd_ssthresh, tp->mss_cache, slow_start_status);
-}
-#endif  /* SEARCH_DEBUG */
-
-/////////////////////////////////////////////////////////
 
 //////////////////////// SEARCH ////////////////////////
 static void search_update(struct sock *sk, u32 rtt_us)
@@ -725,12 +656,6 @@ static void search_update(struct sock *sk, u32 rtt_us)
 		else
 			ca->not_enough_bin += 1;
 
-#ifdef SEARCH_DEBUG
-		// logging information about SEARCH analysis
-		if (search_logging > 0)
-			search_log_info(sk, rtt_us, curr_delv_bytes, prev_delv_bytes, norm_diff);
-#endif /* SEARCH_DEBUG */
-
 		/* update bin-related parameters for the next bin */
 		ca->bin_end_us = ca->bin_end_us + ca->bin_duration_us;
 		ca->bin_total++;
@@ -775,17 +700,6 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 	if (!ca->found && tcp_in_slow_start(tp) && hystart &&
 	    tp->snd_cwnd >= hystart_low_window)
 		hystart_update(sk, delay);
-
-#ifdef SEARCH_DEBUG 
-	/////////////////logging-ACK information/////////////////
-	if (search_logging > 0) {
-		if (tcp_in_slow_start(tp))
-			search_log_ack_info(sk, delay, 1);
-		else
-			search_log_ack_info(sk, delay, 2);
-	}
-#endif /* SEARCH_DEBUG */ 
-
 }
 
 static struct tcp_congestion_ops cubicsearch __read_mostly = {
