@@ -50,50 +50,10 @@ static int initial_ssthresh __read_mostly;
 static int bic_scale __read_mostly = 41;
 static int tcp_friendliness __read_mostly = 1;
 
-static int hystart __read_mostly = 0; //// SEARCH ////
+static int hystart __read_mostly = 0; 	/* Disabled Hystart to use SEARCH */
 static int hystart_detect __read_mostly = HYSTART_ACK_TRAIN | HYSTART_DELAY;
 static int hystart_low_window __read_mostly = 16;
 static int hystart_ack_delta_us __read_mostly = 2000;
-
-//////////////////////// SEARCH ////////////////////////
-/* disable search with command:
- 		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/search"
-   enable search with command:
- 		sudo sh -c "echo '1' > /sys/module/cubic_with_search/parameters/search" 
-   enable search without changging congestion window with command:
-		sudo sh -c "echo '2' > /sys/module/cubic_with_search/parameters/search" */
-
-#define SEARCH_BINS 10 /* Number of bins in a window */
-#define SEARCH_TOTAL_BINS 25 /* Total number of bins containing essential bins to cover RTT shift */	
-#define NOT_LOG_ONLY 1 /* Search is enabled and change the congestion window */
-
-static int search __read_mostly = 1;
-static int search_logging __read_mostly = 1;
-static int search_window_size_time __read_mostly = 35; 
-static int search_thresh __read_mostly = 35; 
-static short debug_port __read_mostly = 5201;
-static int set_cwnd __read_mostly = 1;
-static int do_intpld __read_mostly = 1;
-
-// Module parameters
-module_param(search, int, 0644);
-module_param(search_logging, int, 0644);
-module_param(search_window_size_time, int, 0644);
-module_param(search_thresh, int, 0644);
-module_param(debug_port, short, 0644);
-module_param(set_cwnd, int, 0644);
-module_param(do_intpld, int, 0644);
-
-MODULE_PARM_DESC(search, "Enable the Slow start Exit At Right CHoke point (SEARCH) algorithm _ 0: disabled, 1: enabled, 2: enabled without changing congestion window(only logging)");
-MODULE_PARM_DESC(search_logging, "Enable log messages _ 1: enable logging, 0: disable logging");
-MODULE_PARM_DESC(search_window_size_time, "Multiply with (initial RTT / 10) to set the window size");
-MODULE_PARM_DESC(search_thresh, "Threshold for exiting from slow start in percentage");
-MODULE_PARM_DESC(debug_port, "for debug usage");
-MODULE_PARM_DESC(set_cwnd, "Decrease the cwnd to its value in 2 initial RTT ago");
-MODULE_PARM_DESC(do_intpld, "Do interpolation for calculating previous delivered bytes window");
-
-////////////////////////////////////////////////////////
-
 static u32 cube_rtt_scale __read_mostly;
 static u32 beta_scale __read_mostly;
 static u64 cube_factor __read_mostly;
@@ -118,6 +78,52 @@ module_param(hystart_low_window, int, 0644);
 MODULE_PARM_DESC(hystart_low_window, "lower bound cwnd for hybrid slow start");
 module_param(hystart_ack_delta_us, int, 0644);
 MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (usecs)");
+
+
+//////////////////////// SEARCH ////////////////////////
+/** 
+   disable search with command:
+ 		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/search"
+   enable search with command:
+ 		sudo sh -c "echo '1' > /sys/module/cubic_with_search/parameters/search"
+   enable search without changing congestion window with command:
+		sudo sh -c "echo '2' > /sys/module/cubic_with_search/parameters/search"
+*/
+
+#define SEARCH_BINS 10		/* Number of bins in a window */
+#define SEARCH_TOTAL_BINS 25 	/* Total number of bins containing essential 
+				   bins to cover RTT shift */
+#define NOT_LOG_ONLY 1		/* Search is enabled and change the congestion window */
+
+static int search __read_mostly = 1;
+static int search_window_size_time __read_mostly = 35;
+static int search_thresh __read_mostly = 35;
+static int set_cwnd __read_mostly = 1;
+static int do_intpld __read_mostly = 1;
+
+#ifdef SEARCH_DEBUG
+static int search_logging __read_mostly = 1;
+static short debug_port __read_mostly = 5201;
+#endif /* SEARCH_DEBUG  */
+
+// Module parameters used by SEARCH
+module_param(search, int, 0644);
+MODULE_PARM_DESC(search, "Enable SEARCH algorithm 0: disabled, 1: enabled, 2: enabled without changing congestion window(only logging)");
+module_param(search_window_size_time, int, 0644);
+MODULE_PARM_DESC(search_window_size_time, "Multiply with (initial RTT / 10) to set the window size");
+module_param(search_thresh, int, 0644);
+MODULE_PARM_DESC(search_thresh, "Threshold for exiting from slow start in percentage");
+module_param(set_cwnd, int, 0644);
+MODULE_PARM_DESC(set_cwnd, "Decrease the cwnd to its value in 2 initial RTT ago");
+module_param(do_intpld, int, 0644);
+MODULE_PARM_DESC(do_intpld, "Do interpolation for calculating previous delivered bytes window");
+
+#ifdef SEARCH_DEBUG
+module_param(search_logging, int, 0644);
+MODULE_PARM_DESC(search_logging, "Enable log messages 1: enable logging, 0: disable logging");
+module_param(debug_port, short, 0644);
+MODULE_PARM_DESC(debug_port, "for debug usage");
+#endif /* SEARCH_DEBUG  */
 
 /* BIC TCP Parameters */
 struct bictcp {
@@ -265,9 +271,9 @@ static u32 cubic_root(u64 a)
 
 	/*
 	 * Newton-Raphson iteration
-	 *                         2
+	 *			 2
 	 * x    = ( 2 * x  +  a / x  ) / 3
-	 *  k+1          k         k
+	 *  k+1	  k	 k
 	 */
 	x = (2 * x + (u32)div64_u64(a, (u64)x * (u64)(x - 1)));
 	x = ((x * 341) >> 10);
@@ -343,16 +349,16 @@ static inline void bictcp_update(struct bictcp *ca, u32 cwnd, u32 acked)
 
 	/* c/rtt * (t-K)^3 */
 	delta = (cube_rtt_scale * offs * offs * offs) >> (10+3*BICTCP_HZ);
-	if (t < ca->bic_K)                            /* below origin*/
+	if (t < ca->bic_K)			    /* below origin*/
 		bic_target = ca->bic_origin_point - delta;
-	else                                          /* above origin*/
+	else					  /* above origin*/
 		bic_target = ca->bic_origin_point + delta;
 
 	/* cubic function - calc bictcp_cnt*/
 	if (bic_target > cwnd) {
 		ca->cnt = cwnd / (bic_target - cwnd);
 	} else {
-		ca->cnt = 100 * cwnd;              /* very small increment*/
+		ca->cnt = 100 * cwnd;	      /* very small increment*/
 	}
 
 	/*
@@ -396,7 +402,7 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 		return;
 
 	if (tcp_in_slow_start(tp)) {
-		
+
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
 		acked = tcp_slow_start(tp, acked);
@@ -477,9 +483,11 @@ static void hystart_update(struct sock *sk, u32 delay)
 
 			if ((s32)(now - ca->round_start) > threshold) {
 				ca->found = 1;
+#ifdef SEARCH_DEBUG
 				pr_debug("hystart_ack_train (%u > %u) delay_min %u (+ ack_delay %u) cwnd %u\n",
 					 now - ca->round_start, threshold,
 					 ca->delay_min, hystart_ack_delay(sk), tp->snd_cwnd);
+#endif /* SEARCH_DEBUG */
 				NET_INC_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTTRAINDETECT);
 				NET_ADD_STATS(sock_net(sk),
@@ -511,12 +519,14 @@ static void hystart_update(struct sock *sk, u32 delay)
 	}
 }
 
+#ifdef DEDUG
 //////////////////////// SEARCH ////////////////////////
 static inline void search_print_header(struct bictcp *ca)
 {
 	printk(KERN_INFO "[CCRG]: [flow pointer: 0x%p] ",
 		ca);
 }
+#endif 
 
 // function to update missed bins
 static void search_update_missed_bins(struct sock *sk)
@@ -565,13 +575,11 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 	struct bictcp *ca = inet_csk_ca(sk);
 
 	u64 difference_bytes_acked = 0;
-	u32 now_us = bictcp_clock_us(sk);
 	u32 i = 0;
 	u32 congestion_index = 0;
 	u32 initial_rtt = 0;
 
 	if (search == NOT_LOG_ONLY) {
-
 		if (set_cwnd == 1) {
 			initial_rtt = ca->bin_duration_us * SEARCH_BINS * 10 / search_window_size_time;
 			congestion_index = ca->bin_total - ((2 * initial_rtt) / ca->bin_duration_us);
@@ -581,21 +589,22 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 
 			for (i = congestion_index + 1 ; i <= ca->bin_total; i++)
 				difference_bytes_acked += ca->bin[i % SEARCH_TOTAL_BINS];
-		
+
 			tp->snd_cwnd -= (difference_bytes_acked / tp->mss_cache);
 		}
 
 		ca->stop_search = 1;
-    	tp->snd_ssthresh = tp->snd_cwnd;
-
+		tp->snd_ssthresh = tp->snd_cwnd;
+#ifdef SEARCH_DEBUG
 		// Log exit condition met and updated congestion window
 		search_print_header(ca);
-		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met [cwnd %u] [ssthresh %u]\n", now_us, tp->snd_cwnd, tp->snd_ssthresh);
-	}
-	else {
+		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met [cwnd %u] [ssthresh %u]\n", bictcp_clock_us(sk), tp->snd_cwnd, tp->snd_ssthresh);
+
+	} else {
 		// Logging exit condition met
 		search_print_header(ca);
-		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met without parameter changes]\n", now_us);
+		printk(KERN_CONT "SEARCH_INFO: [now %u] [exit condition was met without parameter changes]\n", bictcp_clock_us(sk), now_us);
+#endif /* SEARCH_DEBUG */
 	}
 }
 
@@ -603,9 +612,7 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 static u64 search_interpolate_delivered_bytes(struct sock *sk, u32 rtt_us, u32 curr_index, u32 prev_index, u64 left_bytes, u64 right_bytes) {
 
 	struct bictcp *ca = inet_csk_ca(sk);
-
 	u32 now_us = bictcp_clock_us(sk);
-
 	u32 time_left = 0, time_right = 0;
 	u64 interpolated_delv_bytes = 0;
 	u32 proportion = 0;
@@ -619,9 +626,11 @@ static u64 search_interpolate_delivered_bytes(struct sock *sk, u32 rtt_us, u32 c
 		proportion = ((now_us - rtt_us) - time_left) / ca->bin_duration_us;
 		interpolated_delv_bytes = left_bytes + proportion * (right_bytes - left_bytes);
 	}
-    return interpolated_delv_bytes;
+
+	return interpolated_delv_bytes;
 }
 
+#ifdef SEARCH_DEBUG 
 // Function to log SEARCH analysis information
 static void search_log_info(struct sock *sk, u32 rtt_us, u64 curr_delv_bytes, u64 prev_delv_bytes, s32 norm_diff)
 {
@@ -633,7 +642,7 @@ static void search_log_info(struct sock *sk, u32 rtt_us, u64 curr_delv_bytes, u6
 		return;
 
 	search_print_header(ca);
-	printk(KERN_CONT "SEARCH_INFO: [now %u] [bin_duration %u] [rtt %u] [curr_delv %llu] [prev_delv %llu] [norm_100 %d] [not_enough_bins %u]\n", 
+	printk(KERN_CONT "SEARCH_INFO: [now %u] [bin_duration %u] [rtt %u] [curr_delv %llu] [prev_delv %llu] [norm_100 %d] [not_enough_bins %u]\n",
 	  now_us, ca->bin_duration_us, rtt_us, curr_delv_bytes, prev_delv_bytes, norm_diff, ca->not_enough_bin);
 }
 
@@ -649,9 +658,10 @@ static void search_log_ack_info(struct sock *sk, u32 rtt_us, u8 slow_start_statu
 		return;
 
 	search_print_header(ca);
-	printk(KERN_CONT "ACK_FUNC_INFO: [now %u] [total_byte_acked %llu] [total_byte_sent %llu] [rtt_ms %lu] [num_lost %u] [total_retrans %u] [retrans %u] [cwnd_pkt %u] [ssthresh %u] [mss %u] [ss_status %u]\n", 
+	printk(KERN_CONT "ACK_FUNC_INFO: [now %u] [total_byte_acked %llu] [total_byte_sent %llu] [rtt_ms %lu] [num_lost %u] [total_retrans %u] [retrans %u] [cwnd_pkt %u] [ssthresh %u] [mss %u] [ss_status %u]\n",
 		now_us, tp->bytes_acked, tp->bytes_sent, rtt_us / USEC_PER_MSEC, tp->lost_out, tp->total_retrans, tp->retrans_out, tp->snd_cwnd, tp->snd_ssthresh, tp->mss_cache, slow_start_status);
 }
+#endif  /* SEARCH_DEBUG */
 
 /////////////////////////////////////////////////////////
 
@@ -677,7 +687,7 @@ static void search_update(struct sock *sk, u32 rtt_us)
 	}
 
 	/* check if it's reached the bin boundary */
-	if (now_us > ca->bin_end_us) {	
+	if (now_us > ca->bin_end_us) {
 		/* Check and update missed bins */
 		search_update_missed_bins(sk);
 
@@ -691,34 +701,36 @@ static void search_update(struct sock *sk, u32 rtt_us)
 		prev_index = ca->bin_total - (rtt_us/ca->bin_duration_us);
 
 		/* check if there is enough bins after shift for computing previous window */
-		if (prev_index >= SEARCH_BINS - 1 && SEARCH_TOTAL_BINS - (curr_index - prev_index) >= SEARCH_BINS) { 
-			
+		if (prev_index >= SEARCH_BINS - 1 && SEARCH_TOTAL_BINS - (curr_index - prev_index) >= SEARCH_BINS) {
+
 			/* Calculate delivered bytes for the current and previous windows */
 			curr_delv_bytes = search_calculate_window_bytes(sk, curr_index);
 			prev_delv_bytes_over = search_calculate_window_bytes(sk, prev_index);
 			prev_delv_bytes_under = search_calculate_window_bytes(sk, prev_index - 1);
 
-			if (do_intpld == 1) 
+			if (do_intpld == 1)
 				prev_delv_bytes = search_interpolate_delivered_bytes(sk, rtt_us, curr_index, prev_index, prev_delv_bytes_under, prev_delv_bytes_over);
 			else
 				prev_delv_bytes = prev_delv_bytes_over;
-			
+
 
 			if (prev_delv_bytes > 0) {
 				norm_diff = ((2 * prev_delv_bytes) - curr_delv_bytes)*100 / (2 * prev_delv_bytes);
-				
+
 				/* check for exit condition */
-				if ((2 * prev_delv_bytes) >= curr_delv_bytes && norm_diff >= search_thresh) 
+				if ((2 * prev_delv_bytes) >= curr_delv_bytes && norm_diff >= search_thresh)
 					search_exit_slow_start(sk, rtt_us);
 			}
 		}
 		else
 			ca->not_enough_bin += 1;
 
+#ifdef SEARCH_DEBUG
 		// logging information about SEARCH analysis
 		if (search_logging > 0)
 			search_log_info(sk, rtt_us, curr_delv_bytes, prev_delv_bytes, norm_diff);
-		
+#endif /* SEARCH_DEBUG */
+
 		/* update bin-related parameters for the next bin */
 		ca->bin_end_us = ca->bin_end_us + ca->bin_duration_us;
 		ca->bin_total++;
@@ -748,41 +760,42 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 	/* first time call or link delay decreases */
 	if (ca->delay_min == 0 || ca->delay_min > delay)
 		ca->delay_min = delay;
-	
+
 	//////////////////////// SEARCH ////////////////////////
 	if (search > 0 && !ca->stop_search) {
-		
-		if (!tcp_in_slow_start(tp)) 
+
+		if (!tcp_in_slow_start(tp))
 			ca->stop_search = 1;
 		else
 			/* implement search algorithm */
        		search_update(sk, delay);
 	}
-	////////////////////////////////////////////////////////
 
 	/* hystart triggers when cwnd is larger than some threshold */
 	if (!ca->found && tcp_in_slow_start(tp) && hystart &&
 	    tp->snd_cwnd >= hystart_low_window)
 		hystart_update(sk, delay);
 
+#ifdef SEARCH_DEBUG 
 	/////////////////logging-ACK information/////////////////
-	if (search_logging > 0) {	
+	if (search_logging > 0) {
 		if (tcp_in_slow_start(tp))
 			search_log_ack_info(sk, delay, 1);
-		else 
+		else
 			search_log_ack_info(sk, delay, 2);
 	}
-	///////////////////////////////////////////////////////
+#endif /* SEARCH_DEBUG */ 
+
 }
 
 static struct tcp_congestion_ops cubicsearch __read_mostly = {
-	.init			= bictcp_init,
+	.init		= bictcp_init,
 	.ssthresh	= bictcp_recalc_ssthresh,
 	.cong_avoid	= bictcp_cong_avoid,
 	.set_state	= bictcp_state,
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cwnd_event	= bictcp_cwnd_event,
-	.pkts_acked = bictcp_acked,
+	.pkts_acked	= bictcp_acked,
 	.owner		= THIS_MODULE,
 	.name		= "cubic_search",
 };
@@ -832,5 +845,5 @@ module_exit(cubicsearch_unregister);
 
 MODULE_AUTHOR("Sangtae Ha, Stephen Hemminger");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("CUBIC SEARCH TCP");
+MODULE_DESCRIPTION("TCP CUBIC w/ SEARCH");
 MODULE_VERSION("2.3");
