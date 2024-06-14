@@ -1,6 +1,6 @@
 #make file 
 
-obj-m := tcp_cubic_search.o
+obj-m := tcp_cubic_search.o tcp_cubic.o
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd) 
 default:
