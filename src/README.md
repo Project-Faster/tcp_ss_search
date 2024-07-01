@@ -17,7 +17,7 @@ and for these lines:
   #define ICSK_CA_PRIV_SIZE      (13 * sizeof(u64))
 ````
 
-change the number `104` to `2800` and `13` to `350`.  Then rebuild and reboot the kernel normally.
+change the number `104` to `132` and `13` to `35`.  Then rebuild and reboot the kernel normally.
 
 
 ## Build

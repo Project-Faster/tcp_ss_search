@@ -140,8 +140,7 @@ struct bictcp {
 	u32	bin_total; 			/* total number of bins */
 	u32	bin_end_us; 			/* end time of the latest bin in microsecond */
 	u8	stop_search; 			/* the choke/exit point based on SEARCH is found */
-	u64 prev_bytes_acked;		/* previous total bytes acked */
-	u32	not_enough_bin;	/* number of cases that  there is not enough bins in shift */
+	u64	prev_bytes_acked;		/* previous total bytes acked */
 	////////////////////////////////////////////////////////
 };
 
@@ -165,7 +164,6 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->bin_end_us = 0;
 	ca->stop_search = 0;
 	ca->prev_bytes_acked = 0;
-	ca->not_enough_bin = 0;
 }
 
 static inline u32 bictcp_clock_us(const struct sock *sk)
@@ -653,8 +651,6 @@ static void search_update(struct sock *sk, u32 rtt_us)
 					search_exit_slow_start(sk, rtt_us);
 			}
 		}
-		else
-			ca->not_enough_bin += 1;
 
 		/* update bin-related parameters for the next bin */
 		ca->bin_end_us = ca->bin_end_us + ca->bin_duration_us;
