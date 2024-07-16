@@ -2,23 +2,7 @@
 
 Welcome to the Slow start Exit At Right CHoke point (SEARCH) TCP repository! This algorithm optimizes slow start exit precisely when needed. It analyzes delivered bytes, compares current and past data using RTT, and decides to exit slow start based on a predefined threshold.
 
-## Dependency 
-
-The kernel needs to be recompiled with a larger `ICSK_CA_PRIV_SIZE`.
-Edit:
-
-`include/net/inet_connection_sock.h`
-
-and for these lines:
-
-````
-  u64                       icsk_ca_priv[104 / sizeof(u64)];
-  
-  #define ICSK_CA_PRIV_SIZE      (13 * sizeof(u64))
-````
-
-change the number `104` to `2800` and `13` to `350`.  Then rebuild and reboot the kernel normally.
-
+Major changes for this branch is to use dynamic memory allocation for "bins". Thus there is no need to recompile the kernel. 
 
 ## Build
 
