@@ -135,13 +135,12 @@ struct bictcp {
 	u32	curr_rtt;	/* the minimum rtt of current round */
 
 	//////////////////////// SEARCH ////////////////////////
-	u32	bin[SEARCH_TOTAL_BINS]; 	/* array to keep bytes for bins */
+	u32	*bin; 				/* array to keep bytes for bins */
 	u32	bin_duration_us; 		/* duration of each bin in microsecond */
 	u32	bin_total; 			/* total number of bins */
 	u32	bin_end_us; 			/* end time of the latest bin in microsecond */
 	u8	stop_search; 			/* the choke/exit point based on SEARCH is found */
-	u64 prev_bytes_acked;		/* previous total bytes acked */
-	u32	not_enough_bin;	/* number of cases that  there is not enough bins in shift */
+	u64 	prev_bytes_acked;		/* previous total bytes acked */
 	////////////////////////////////////////////////////////
 };
 
@@ -159,13 +158,19 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->tcp_cwnd = 0;
 	ca->found = 0;
 	/* SEARCH related CA variables */
-	memset(ca->bin, 0, sizeof(ca->bin));
+	if (!ca->bin)
+                ca->bin = (u32 *) kcalloc(SEARCH_TOTAL_BINS, sizeof(u32), GFP_NOWAIT | __GFP_NOWARN);
+
+        if (ca->bin)
+                memset(ca->bin, 0, sizeof(u32) * SEARCH_TOTAL_BINS);
+	else
+		pr_err("ca[%p] search failed to allowcate mem.\n", ca);
+
 	ca->bin_duration_us = 0;
 	ca->bin_total = 0;
 	ca->bin_end_us = 0;
 	ca->stop_search = 0;
 	ca->prev_bytes_acked = 0;
-	ca->not_enough_bin = 0;
 }
 
 static inline u32 bictcp_clock_us(const struct sock *sk)
@@ -653,8 +658,6 @@ static void search_update(struct sock *sk, u32 rtt_us)
 					search_exit_slow_start(sk, rtt_us);
 			}
 		}
-		else
-			ca->not_enough_bin += 1;
 
 		/* update bin-related parameters for the next bin */
 		ca->bin_end_us = ca->bin_end_us + ca->bin_duration_us;
@@ -702,6 +705,16 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 		hystart_update(sk, delay);
 }
 
+static void bictcp_release(struct sock *sk)
+{
+        struct bictcp *ca = inet_csk_ca(sk);
+
+        if (ca->bin)
+                kfree(ca->bin);
+
+        ca->bin = NULL;
+}
+
 static struct tcp_congestion_ops cubicsearch __read_mostly = {
 	.init		= bictcp_init,
 	.ssthresh	= bictcp_recalc_ssthresh,
@@ -709,6 +722,7 @@ static struct tcp_congestion_ops cubicsearch __read_mostly = {
 	.set_state	= bictcp_state,
 	.undo_cwnd	= tcp_reno_undo_cwnd,
 	.cwnd_event	= bictcp_cwnd_event,
+	.release	= bictcp_release,
 	.pkts_acked	= bictcp_acked,
 	.owner		= THIS_MODULE,
 	.name		= "cubic_search",
