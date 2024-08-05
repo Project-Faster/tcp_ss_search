@@ -95,6 +95,8 @@ MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (
 				   bins to cover RTT shift */
 #define NOT_LOG_ONLY 1		/* Search is enabled and change the congestion window */
 
+#define SEARCH_SCALE_FACTOR  7
+
 static int search __read_mostly = 1;
 static int search_window_size_time __read_mostly = 35;
 static int search_thresh __read_mostly = 35;
@@ -135,7 +137,7 @@ struct bictcp {
 	u32	curr_rtt;	/* the minimum rtt of current round */
 
 	//////////////////////// SEARCH ////////////////////////
-	u32	bin[SEARCH_TOTAL_BINS]; 	/* array to keep bytes for bins */
+	u16	bin[SEARCH_TOTAL_BINS]; 	/* array to keep bytes for bins */
 	u32	bin_duration_us; 		/* duration of each bin in microsecond */
 	u32	bin_total; 			/* total number of bins */
 	u32	bin_end_us; 			/* end time of the latest bin in microsecond */
@@ -624,7 +626,7 @@ static void search_update(struct sock *sk, u32 rtt_us)
 
 		/* update delivered bytes in bin */
 		acked_bytes = tp->bytes_acked - ca->prev_bytes_acked;
-		ca->bin[ca->bin_total % SEARCH_TOTAL_BINS] = acked_bytes;
+		ca->bin[ca->bin_total % SEARCH_TOTAL_BINS] = (acked_bytes >> SEARCH_SCALE_FACTOR);
 		ca->prev_bytes_acked = tp->bytes_acked;
 
 		/* calculate indices for the current window and previous window after shifting by current RTT */
