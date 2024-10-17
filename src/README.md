@@ -4,6 +4,8 @@ Welcome to the Slow start Exit At Right CHoke point (SEARCH) TCP repository! Thi
 
 ## Dependency 
 
+Note: this is a branch "search_2_dynamic_memalloc" which does not require recompile the kernel.  
+
 The kernel needs to be recompiled with a larger `ICSK_CA_PRIV_SIZE`.
 Edit:
 
