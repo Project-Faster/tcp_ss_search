@@ -224,7 +224,6 @@ static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 	case CA_EVENT_CWND_RESTART:
 		if (search)
 			bictcp_search_reset(sk);
-
 		break;
 	default:
 		break;
@@ -583,7 +582,7 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 		rollback_cwnd = difference_bytes_acked / tp->mss_cache;
 
 		if (rollback_cwnd < tp->snd_cwnd)
-			tp->snd_cwnd = max(tp->snd_cwnd, tp->snd_cwnd - rollback_cwnd);
+			tp->snd_cwnd = max(TCP_INIT_CWND, tp->snd_cwnd - rollback_cwnd);
 	}
 
 	ca->stop_search = 1;
