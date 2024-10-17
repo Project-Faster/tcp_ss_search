@@ -86,30 +86,27 @@ MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (
  		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/search"
    enable search with command:
  		sudo sh -c "echo '1' > /sys/module/cubic_with_search/parameters/search"
-   enable search without changing congestion window with command:
-		sudo sh -c "echo '2' > /sys/module/cubic_with_search/parameters/search"
 */
 
 #define SEARCH_BINS 10		/* Number of bins in a window */
 #define SEARCH_TOTAL_BINS 25 	/* Total number of bins containing essential
 				   bins to cover RTT shift */
-#define NOT_LOG_ONLY 1		/* Search is enabled and change the congestion window */
 
 static int search __read_mostly = 1;
 static int search_window_size_time __read_mostly = 35;
 static int search_thresh __read_mostly = 35;
-static int set_cwnd __read_mostly = 1;
+static int cwnd_rollback __read_mostly = 1;
 static int do_intpld __read_mostly = 1;
 
 // Module parameters used by SEARCH
 module_param(search, int, 0644);
-MODULE_PARM_DESC(search, "Enable SEARCH algorithm 0: disabled, 1: enabled, 2: enabled without changing congestion window(only logging)");
+MODULE_PARM_DESC(search, "Enable SEARCH algorithm 0: disabled, 1: enabled");
 module_param(search_window_size_time, int, 0644);
 MODULE_PARM_DESC(search_window_size_time, "Multiply with (initial RTT / 10) to set the window size");
 module_param(search_thresh, int, 0644);
 MODULE_PARM_DESC(search_thresh, "Threshold for exiting from slow start in percentage");
-module_param(set_cwnd, int, 0644);
-MODULE_PARM_DESC(set_cwnd, "Decrease the cwnd to its value in 2 initial RTT ago");
+module_param(cwnd_rollback, int, 0644);
+MODULE_PARM_DESC(cwnd_rollback, "Decrease the cwnd to its value in 2 initial RTT ago");
 module_param(do_intpld, int, 0644);
 MODULE_PARM_DESC(do_intpld, "Do interpolation for calculating previous delivered bytes window");
 
@@ -144,6 +141,18 @@ struct bictcp {
 	////////////////////////////////////////////////////////
 };
 
+static inline void bictcp_search_reset(struct sock *sk)
+{
+	const struct tcp_sock *tp = tcp_sk(sk);
+	struct bictcp *ca = inet_csk_ca(sk);
+	memset(ca->bin, 0, sizeof(ca->bin));
+	ca->bin_duration_us = 0;
+	ca->bin_total = 0;
+	ca->bin_end_us = 0;
+	ca->stop_search = 0;
+	ca->prev_bytes_acked = tp->bytes_acked;
+}
+
 static inline void bictcp_reset(struct bictcp *ca)
 {
 	ca->cnt = 0;
@@ -157,13 +166,7 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->ack_cnt = 0;
 	ca->tcp_cwnd = 0;
 	ca->found = 0;
-	/* SEARCH related CA variables */
-	memset(ca->bin, 0, sizeof(ca->bin));
-	ca->bin_duration_us = 0;
-	ca->bin_total = 0;
-	ca->bin_end_us = 0;
-	ca->stop_search = 0;
-	ca->prev_bytes_acked = 0;
+
 }
 
 static inline u32 bictcp_clock_us(const struct sock *sk)
@@ -192,17 +195,21 @@ static void bictcp_init(struct sock *sk)
 	if (hystart)
 		bictcp_hystart_reset(sk);
 
+	if (search)
+		bictcp_search_reset(sk);
+
 	if (!hystart && initial_ssthresh)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
 }
 
 static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
-	if (event == CA_EVENT_TX_START) {
-		struct bictcp *ca = inet_csk_ca(sk);
-		u32 now = tcp_jiffies32;
-		s32 delta;
+	struct bictcp *ca = inet_csk_ca(sk);
 
+	switch(event) {
+	case CA_EVENT_TX_START:
+		s32 delta;
+		u32 now = tcp_jiffies32;
 		delta = now - tcp_sk(sk)->lsndtime;
 
 		/* We were application limited (idle) for a while.
@@ -213,8 +220,15 @@ static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 			if (after(ca->epoch_start, now))
 				ca->epoch_start = now;
 		}
-		return;
+		break;
+	case CA_EVENT_CWND_RESTART:
+		if (search)
+			bictcp_search_reset(sk);
+		break;
+	default:
+		break;
 	}
+	return;
 }
 
 /* calculate the cubic root of x using a table lookup followed by one
@@ -553,23 +567,27 @@ static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
 	u32 congestion_index = 0;
 	u32 initial_rtt = 0;
 
-	if (search == NOT_LOG_ONLY) {
-		if (set_cwnd == 1) {
-			initial_rtt = ca->bin_duration_us * SEARCH_BINS * 10 / search_window_size_time;
-			congestion_index = ca->bin_total - ((2 * initial_rtt) / ca->bin_duration_us);
+	if (cwnd_rollback == 1) {
+		u32 rollback_cwnd = tp->snd_cwnd;
 
-			if (ca->bin_total - congestion_index > SEARCH_TOTAL_BINS)
-				congestion_index = ca->bin_total - SEARCH_TOTAL_BINS + 1;
+		initial_rtt = ca->bin_duration_us * SEARCH_BINS * 10 / search_window_size_time;
+		congestion_index = ca->bin_total - ((2 * initial_rtt) / ca->bin_duration_us);
 
-			for (i = congestion_index + 1 ; i <= ca->bin_total; i++)
-				difference_bytes_acked += ca->bin[i % SEARCH_TOTAL_BINS];
+		if (ca->bin_total - congestion_index > SEARCH_TOTAL_BINS)
+			congestion_index = ca->bin_total - SEARCH_TOTAL_BINS + 1;
 
-			tp->snd_cwnd -= (difference_bytes_acked / tp->mss_cache);
-		}
+		for (i = congestion_index + 1 ; i <= ca->bin_total; i++)
+			difference_bytes_acked += ca->bin[i % SEARCH_TOTAL_BINS];
 
-		ca->stop_search = 1;
-		tp->snd_ssthresh = tp->snd_cwnd;
+		rollback_cwnd = difference_bytes_acked / tp->mss_cache;
+
+		if (rollback_cwnd < tp->snd_cwnd)
+			tp->snd_cwnd = max(TCP_INIT_CWND, tp->snd_cwnd - rollback_cwnd);
 	}
+
+	ca->stop_search = 1;
+	tp->snd_ssthresh = tp->snd_cwnd;
+
 }
 
 // Function to perform interpolation and return the interpolated value
@@ -630,7 +648,7 @@ static void search_update(struct sock *sk, u32 rtt_us)
 		prev_index = ca->bin_total - (rtt_us/ca->bin_duration_us);
 
 		/* check if there is enough bins after shift for computing previous window */
-		if (prev_index >= SEARCH_BINS - 1 && SEARCH_TOTAL_BINS - (curr_index - prev_index) >= SEARCH_BINS) {
+		if (prev_index >= SEARCH_BINS && SEARCH_TOTAL_BINS - (curr_index - prev_index) >= SEARCH_BINS) {
 
 			/* Calculate delivered bytes for the current and previous windows */
 			curr_delv_bytes = search_calculate_window_bytes(sk, curr_index);
