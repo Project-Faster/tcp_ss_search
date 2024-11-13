@@ -564,11 +564,9 @@ static void search_update_bins(struct sock *sk, u32 now_us)
 
 	/* If passed_bins greater than 1, it means we have some missed bins */
 	passed_bins = ((now_us - ca->search.bin_end_us) / ca->search.bin_duration_us) + 1;
-
-	if (passed_bins >= 3) { /* Missed 2 or more than 2 bins, reset SEARCH*/
-		bictcp_search_reset(ca);
-		return;
-	}
+	
+	if (passed_bins >= SEARCH_TOTAL_BINS)
+		memset(ca->search.bin, ca->search.bin[ca->search.curr_idx], sizeof(ca->search.bin));
 	else {
 		for (i = ca->search.curr_idx + 1; i < ca->search.curr_idx + passed_bins; i++){
 
