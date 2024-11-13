@@ -174,7 +174,8 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->epoch_start = 0;
 	ca->ack_cnt = 0;
 	ca->tcp_cwnd = 0;
-	ca->hystart.found = 0;
+	if (slow_start_mode == SS_EXIT_POINT_HYSTART)
+		ca->hystart.found = 0;
 }
 
 //////////////////////// SEARCH ////////////////////////
