@@ -221,8 +221,9 @@ static void bictcp_init(struct sock *sk)
 			bictcp_hystart_reset(sk);
 			break;
 		case SS_EXIT_POINT_NONE:
-			default:
-				break;
+			break;
+		default:
+			break;
 	}
   	///////////////////////////////////////////////////////
 	if (slow_start_mode != SS_EXIT_POINT_HYSTART && initial_ssthresh)
