@@ -571,7 +571,7 @@ static void search_update_bins(struct sock *sk, u32 now_us)
 		for (i = ca->search.curr_idx + 1; i < ca->search.curr_idx + passed_bins; i++){
 
 			if (ca->search.curr_idx >= 0)
-				ca->search.bin[i % SEARCH_TOTAL_BINS] = ca->search.bin[ca->search.curr_idx];
+				ca->search.bin[i % SEARCH_TOTAL_BINS] = ca->search.bin[ca->search.curr_idx % SEARCH_TOTAL_BINS];
 			else
 				ca->search.bin[i % SEARCH_TOTAL_BINS] = 0;
 		}
