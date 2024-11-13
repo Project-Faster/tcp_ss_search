@@ -467,11 +467,21 @@ static void bictcp_state(struct sock *sk, u8 new_state)
 		bictcp_reset(inet_csk_ca(sk));
 
 		//////////////////////// SEARCH ////////////////////////
-		bictcp_search_reset(inet_csk_ca(sk));
+		switch (ca->ss_exit_point) {
+			case SS_EXIT_POINT_SEARCH:
+				bictcp_search_reset(ca);  // Reset SEARCH slow start
+				break;
+			case SS_EXIT_POINT_HYSTART:
+				bictcp_hystart_reset(sk);  // Reset HyStart slow start
+				break;
+			case SS_EXIT_POINT_NONE:
+				break;
+			default:
+				break;
+		}
 		///////////////////////////////////////////////////////
-
-		bictcp_hystart_reset(sk);
 	}
+		
 }
 
 /* Account for TSO/GRO delays.
