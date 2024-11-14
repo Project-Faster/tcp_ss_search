@@ -578,7 +578,7 @@ static void search_update_bins(struct sock *sk, u32 now_us)
 	passed_bins = ((now_us - ca->search.bin_end_us) / ca->search.bin_duration_us) + 1;
 	
 	if (passed_bins >= SEARCH_TOTAL_BINS)
-		memset(ca->search.bin, ca->search.bin[ca->search.curr_idx], sizeof(ca->search.bin));
+		memset(ca->search.bin, ca->search.bin[ca->search.curr_idx % SEARCH_TOTAL_BINS], sizeof(ca->search.bin));
 	else {
 		for (i = ca->search.curr_idx + 1; i < ca->search.curr_idx + passed_bins; i++){
 
