@@ -1,0 +1,8 @@
+Eric Dumazet <edumazet@google.com> (maintainer:NETWORKING [TCP])
+"David S. Miller" <davem@davemloft.net> (maintainer:NETWORKING [IPv4/IPv6])
+David Ahern <dsahern@kernel.org> (maintainer:NETWORKING [IPv4/IPv6])
+Jakub Kicinski <kuba@kernel.org> (maintainer:NETWORKING [GENERAL])
+Paolo Abeni <pabeni@redhat.com> (maintainer:NETWORKING [GENERAL])
+Simon Horman <horms@kernel.org> (reviewer:NETWORKING [GENERAL])
+netdev@vger.kernel.org (open list:NETWORKING [TCP])
+linux-kernel@vger.kernel.org (open list)

@@ -4,23 +4,7 @@ Welcome to the Slow start Exit At Right CHoke point (SEARCH) TCP repository! Thi
 
 ## Dependency 
 
-Note: this is a branch "search_2_dynamic_memalloc" which does not require recompile the kernel.  
-
-The kernel needs to be recompiled with a larger `ICSK_CA_PRIV_SIZE`.
-Edit:
-
-`include/net/inet_connection_sock.h`
-
-and for these lines:
-
-````
-  u64                       icsk_ca_priv[104 / sizeof(u64)];
-  
-  #define ICSK_CA_PRIV_SIZE      (13 * sizeof(u64))
-````
-
 change the number `104` to `132` and `13` to `35`.  Then rebuild and reboot the kernel normally.
-
 
 ## Build
 

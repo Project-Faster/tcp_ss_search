@@ -1,0 +1,53 @@
+CHECK: multiple assignments should be avoided
+#169: FILE: net/ipv4/tcp_cubic.c:190:
++	ca->hystart.round_start = ca->hystart.last_ack = bictcp_clock_us(sk);
+
+WARNING: line length of 112 exceeds 100 columns
+#354: FILE: net/ipv4/tcp_cubic.c:586:
++	/* If we passed more than search_missed_bins_threshold bins, need to reset SEARCH, and initialize bins*/
+
+WARNING: line length of 112 exceeds 100 columns
+#362: FILE: net/ipv4/tcp_cubic.c:594:
++		ca->search.bin[i % SEARCH_TOTAL_BINS] = ca->search.bin[ca->search.curr_idx % SEARCH_TOTAL_BINS];
+
+WARNING: line length of 101 exceeds 100 columns
+#380: FILE: net/ipv4/tcp_cubic.c:612:
++static inline u64 search_compute_delivered_window(struct sock *sk, s32 left, s32 right, u32 fraction)
+
+WARNING: line length of 111 exceeds 100 columns
+#385: FILE: net/ipv4/tcp_cubic.c:617:
++	delivered = ca->search.bin[(right - 1) % SEARCH_TOTAL_BINS] - ca->search.bin[left % SEARCH_TOTAL_BINS];
+
+WARNING: line length of 109 exceeds 100 columns
+#387: FILE: net/ipv4/tcp_cubic.c:619:
++	if (left == 0) /* If we are interpolating using the very first bin, the "previous" bin value is 0. */
+
+WARNING: line length of 138 exceeds 100 columns
+#390: FILE: net/ipv4/tcp_cubic.c:622:
++		delivered += (ca->search.bin[left % SEARCH_TOTAL_BINS] - ca->search.bin[(left - 1) % SEARCH_TOTAL_BINS]) * fraction / 100;
+
+WARNING: line length of 140 exceeds 100 columns
+#392: FILE: net/ipv4/tcp_cubic.c:624:
++	delivered += (ca->search.bin[right % SEARCH_TOTAL_BINS] - ca->search.bin[(right - 1) % SEARCH_TOTAL_BINS]) * (100 - fraction) / 100;
+
+WARNING: line length of 108 exceeds 100 columns
+#427: FILE: net/ipv4/tcp_cubic.c:659:
++		initial_rtt = ca->search.bin_duration_us * SEARCH_BINS * 10 / search_window_duration_factor;
+
+WARNING: line length of 104 exceeds 100 columns
+#433: FILE: net/ipv4/tcp_cubic.c:665:
++		overshoot_bytes = search_compute_delivered_window(sk, cong_idx, ca->search.curr_idx, 0);
+
+WARNING: line length of 110 exceeds 100 columns
+#497: FILE: net/ipv4/tcp_cubic.c:729:
++			norm_diff = ((prev_delv_bytes << 1) - curr_delv_bytes) * 100 / (prev_delv_bytes << 1);
+
+total: 0 errors, 10 warnings, 1 checks, 486 lines checked
+
+NOTE: For some of the reported defects, checkpatch may be able to
+      mechanically convert to the typical style using --fix or --fix-inplace.
+
+0001-TCP-SEARCH-a-new-slow-start-algorithm-to-replace-Hys.patch has style problems, please review.
+
+NOTE: If any of the errors are false positives, please report
+      them to the maintainer, see CHECKPATCH in MAINTAINERS.
