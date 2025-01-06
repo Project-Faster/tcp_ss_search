@@ -50,7 +50,6 @@ static int initial_ssthresh __read_mostly;
 static int bic_scale __read_mostly = 41;
 static int tcp_friendliness __read_mostly = 1;
 
-static int hystart __read_mostly = 0; 	/* Disabled Hystart to use SEARCH */
 static int hystart_detect __read_mostly = HYSTART_ACK_TRAIN | HYSTART_DELAY;
 static int hystart_low_window __read_mostly = 16;
 static int hystart_ack_delta_us __read_mostly = 2000;
@@ -69,8 +68,6 @@ module_param(bic_scale, int, 0444);
 MODULE_PARM_DESC(bic_scale, "scale (scaled by 1024) value for bic function (bic_scale/1024)");
 module_param(tcp_friendliness, int, 0644);
 MODULE_PARM_DESC(tcp_friendliness, "turn on/off tcp friendliness");
-module_param(hystart, int, 0644);
-MODULE_PARM_DESC(hystart, "turn on/off hybrid slow start algorithm");
 module_param(hystart_detect, int, 0644);
 MODULE_PARM_DESC(hystart_detect, "hybrid slow start detection mechanisms"
 		 " 1: packet-train 2: delay 3: both packet-train and delay");
@@ -81,34 +78,45 @@ MODULE_PARM_DESC(hystart_ack_delta_us, "spacing between ack's indicating train (
 
 
 //////////////////////// SEARCH ////////////////////////
-/**
-   disable search with command:
- 		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/search"
-   enable search with command:
- 		sudo sh -c "echo '1' > /sys/module/cubic_with_search/parameters/search"
+/*	enable SEARCH with command:
+ 		sudo sh -c "echo '1' > /sys/module/your_module_name/parameters/slow_start_mode"
+	enable HyStart with command:
+ 		sudo sh -c "echo '2' > /sys/module/cubic_with_search/parameters/slow_start_mode"  
+	disable both SEARCH and HyStart with command:
+ 		sudo sh -c "echo '0' > /sys/module/cubic_with_search/parameters/slow_start_mode" 
 */
 
+#define MAX_US_INT 0xffff 
 #define SEARCH_BINS 10		/* Number of bins in a window */
+#define SEARCH_EXTRA_BINS 15 /* Number of additional bins to cover data after shiftting by RTT */
 #define SEARCH_TOTAL_BINS 25 	/* Total number of bins containing essential
 				   bins to cover RTT shift */
 
-static int search __read_mostly = 1;
-static int search_window_size_time __read_mostly = 35;
+/* Define an enum for the slow start mode */
+enum {
+    SS_LEGACY = 0, /* No slow start algorithm is used */
+    SS_SEARCH = 1, /* Enable the SEARCH slow start algorithm */
+    SS_HYSTART = 2 /* Enable the HyStart slow start algorithm */
+};
+
+/* Set the default mode */
+static int slow_start_mode __read_mostly = SS_SEARCH;
+static int search_window_duration_factor __read_mostly = 35;
 static int search_thresh __read_mostly = 35;
-static int cwnd_rollback __read_mostly = 1;
-static int do_intpld __read_mostly = 1;
+static int cwnd_rollback __read_mostly = 0;
+static int search_missed_bins_threshold = 2;
 
 // Module parameters used by SEARCH
-module_param(search, int, 0644);
-MODULE_PARM_DESC(search, "Enable SEARCH algorithm 0: disabled, 1: enabled");
-module_param(search_window_size_time, int, 0644);
-MODULE_PARM_DESC(search_window_size_time, "Multiply with (initial RTT / 10) to set the window size");
+module_param(slow_start_mode, int, 0644);
+MODULE_PARM_DESC(slow_start_mode, "0: No Algorithm, 1: SEARCH, 2: HyStart");
+module_param(search_window_duration_factor, int, 0644);
+MODULE_PARM_DESC(search_window_duration_factor, "Multiply with (initial RTT / 10) to set the window size");
 module_param(search_thresh, int, 0644);
 MODULE_PARM_DESC(search_thresh, "Threshold for exiting from slow start in percentage");
 module_param(cwnd_rollback, int, 0644);
 MODULE_PARM_DESC(cwnd_rollback, "Decrease the cwnd to its value in 2 initial RTT ago");
-module_param(do_intpld, int, 0644);
-MODULE_PARM_DESC(do_intpld, "Do interpolation for calculating previous delivered bytes window");
+module_param(search_missed_bins_threshold, int, 0644);
+MODULE_PARM_DESC(search_missed_bins_threshold, "Minimum threshold of missed bins before resetting SEARCH");
 
 /* BIC TCP Parameters */
 struct bictcp {
@@ -123,34 +131,39 @@ struct bictcp {
 	u32	epoch_start;	/* beginning of an epoch */
 	u32	ack_cnt;	/* number of acks */
 	u32	tcp_cwnd;	/* estimated tcp cwnd */
-	u16	unused;
-	u8	sample_cnt;	/* number of samples to decide curr_rtt */
-	u8	found;		/* the exit point is found? */
-	u32	round_start;	/* beginning of each round */
-	u32	end_seq;	/* end_seq of the round */
-	u32	last_ack;	/* last time when the ACK spacing is close */
-	u32	curr_rtt;	/* the minimum rtt of current round */
 
-	//////////////////////// SEARCH ////////////////////////
-	u32	bin[SEARCH_TOTAL_BINS]; 	/* array to keep bytes for bins */
-	u32	bin_duration_us; 		/* duration of each bin in microsecond */
-	u32	bin_total; 			/* total number of bins */
-	u32	bin_end_us; 			/* end time of the latest bin in microsecond */
-	u8	stop_search; 			/* the choke/exit point based on SEARCH is found */
-	u64	prev_bytes_acked;		/* previous total bytes acked */
-	////////////////////////////////////////////////////////
+	/* Union of HyStart and SEARCH variables */
+	union {
+		/* HyStart variables */
+		struct {
+			u16	unused;
+			u8	sample_cnt;/* number of samples to decide curr_rtt */
+			u8	found;		/* the exit point is found? */
+			u32	round_start;	/* beginning of each round */
+			u32	end_seq;	/* end_seq of the round */
+			u32	last_ack;	/* last time when the ACK spacing is close */
+			u32	curr_rtt;	/* the minimum rtt of current round */
+		}hystart;
+
+		/* SEARCH variables */
+		struct {
+			u32	bin_duration_us;	/* duration of each bin in microsecond */
+			s32	curr_idx;	/* total number of bins */
+			u32	bin_end_us;	/* end time of the latest bin in microsecond */
+			u16	bin[SEARCH_TOTAL_BINS];	/* array to keep bytes for bins */
+			u8	unused;
+			u8	scale_factor;	/* scale factor to fit the value with bin size*/
+		}search;
+	};
 };
 
-static inline void bictcp_search_reset(struct sock *sk)
+static inline void bictcp_search_reset(struct bictcp *ca)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
-	struct bictcp *ca = inet_csk_ca(sk);
-	memset(ca->bin, 0, sizeof(ca->bin));
-	ca->bin_duration_us = 0;
-	ca->bin_total = 0;
-	ca->bin_end_us = 0;
-	ca->stop_search = 0;
-	ca->prev_bytes_acked = tp->bytes_acked;
+	memset(ca->search.bin, 0, sizeof(ca->search.bin));
+	ca->search.bin_duration_us = 0;
+	ca->search.curr_idx = -1;
+	ca->search.bin_end_us = 0;
+	ca->search.scale_factor = 0;
 }
 
 static inline void bictcp_reset(struct bictcp *ca)
@@ -165,7 +178,8 @@ static inline void bictcp_reset(struct bictcp *ca)
 	ca->epoch_start = 0;
 	ca->ack_cnt = 0;
 	ca->tcp_cwnd = 0;
-	ca->found = 0;
+	if (slow_start_mode == SS_HYSTART)
+		ca->hystart.found = 0;
 
 }
 
@@ -179,10 +193,10 @@ static inline void bictcp_hystart_reset(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
 
-	ca->round_start = ca->last_ack = bictcp_clock_us(sk);
-	ca->end_seq = tp->snd_nxt;
-	ca->curr_rtt = ~0U;
-	ca->sample_cnt = 0;
+	ca->hystart.round_start = ca->hystart.last_ack = bictcp_clock_us(sk);
+	ca->hystart.end_seq = tp->snd_nxt;
+	ca->hystart.curr_rtt = ~0U;
+	ca->hystart.sample_cnt = 0;
 }
 
 
@@ -192,13 +206,19 @@ static void bictcp_init(struct sock *sk)
 
 	bictcp_reset(ca);
 
-	if (hystart)
+	/* Reset based on the mode */
+	switch (slow_start_mode) {
+	case SS_SEARCH:
+		bictcp_search_reset(ca);
+		break;
+	case SS_HYSTART:
 		bictcp_hystart_reset(sk);
+		break;
+	default:
+		break;
+	}
 
-	if (search)
-		bictcp_search_reset(sk);
-
-	if (!hystart && initial_ssthresh)
+	if (slow_start_mode != SS_HYSTART && initial_ssthresh)
 		tcp_sk(sk)->snd_ssthresh = initial_ssthresh;
 }
 
@@ -207,7 +227,7 @@ static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 	struct bictcp *ca = inet_csk_ca(sk);
 
 	switch(event) {
-	case CA_EVENT_TX_START:
+	case CA_EVENT_TX_START: {
 		s32 delta;
 		u32 now = tcp_jiffies32;
 		delta = now - tcp_sk(sk)->lsndtime;
@@ -221,9 +241,10 @@ static void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 				ca->epoch_start = now;
 		}
 		break;
+	}
 	case CA_EVENT_CWND_RESTART:
-		if (search)
-			bictcp_search_reset(sk);
+		if (slow_start_mode == SS_SEARCH)
+			bictcp_search_reset(ca);
 		break;
 	default:
 		break;
@@ -402,7 +423,7 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 
 	if (tcp_in_slow_start(tp)) {
 
-		if (hystart && after(ack, ca->end_seq))
+		if (slow_start_mode == SS_HYSTART && after(ack, ca->hystart.end_seq))
 			bictcp_hystart_reset(sk);
 		acked = tcp_slow_start(tp, acked);
 		if (!acked)
@@ -433,7 +454,17 @@ static void bictcp_state(struct sock *sk, u8 new_state)
 {
 	if (new_state == TCP_CA_Loss) {
 		bictcp_reset(inet_csk_ca(sk));
-		bictcp_hystart_reset(sk);
+
+		switch (slow_start_mode) {
+		case SS_SEARCH:
+			bictcp_search_reset(inet_csk_ca(sk));
+			break;
+		case SS_HYSTART:
+			bictcp_hystart_reset(sk);
+			break;
+		default:
+			break;
+		}
 	}
 }
 
@@ -467,8 +498,8 @@ static void hystart_update(struct sock *sk, u32 delay)
 		u32 now = bictcp_clock_us(sk);
 
 		/* first detection parameter - ack-train detection */
-		if ((s32)(now - ca->last_ack) <= hystart_ack_delta_us) {
-			ca->last_ack = now;
+		if ((s32)(now - ca->hystart.last_ack) <= hystart_ack_delta_us) {
+			ca->hystart.last_ack = now;
 
 			threshold = ca->delay_min + hystart_ack_delay(sk);
 
@@ -480,10 +511,10 @@ static void hystart_update(struct sock *sk, u32 delay)
 			if (sk->sk_pacing_status == SK_PACING_NONE)
 				threshold >>= 1;
 
-			if ((s32)(now - ca->round_start) > threshold) {
-				ca->found = 1;
+			if ((s32)(now - ca->hystart.round_start) > threshold) {
+				ca->hystart.found = 1;
 				pr_debug("hystart_ack_train (%u > %u) delay_min %u (+ ack_delay %u) cwnd %u\n",
-					 now - ca->round_start, threshold,
+					 now - ca->hystart.round_start, threshold,
 					 ca->delay_min, hystart_ack_delay(sk), tp->snd_cwnd);
 				NET_INC_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTTRAINDETECT);
@@ -497,14 +528,14 @@ static void hystart_update(struct sock *sk, u32 delay)
 
 	if (hystart_detect & HYSTART_DELAY) {
 		/* obtain the minimum delay of more than sampling packets */
-		if (ca->curr_rtt > delay)
-			ca->curr_rtt = delay;
-		if (ca->sample_cnt < HYSTART_MIN_SAMPLES) {
-			ca->sample_cnt++;
+		if (ca->hystart.curr_rtt > delay)
+			ca->hystart.curr_rtt = delay;
+		if (ca->hystart.sample_cnt < HYSTART_MIN_SAMPLES) {
+			ca->hystart.sample_cnt++;
 		} else {
-			if (ca->curr_rtt > ca->delay_min +
+			if (ca->hystart.curr_rtt > ca->delay_min +
 			    HYSTART_DELAY_THRESH(ca->delay_min >> 3)) {
-				ca->found = 1;
+				ca->hystart.found = 1;
 				NET_INC_STATS(sock_net(sk),
 					      LINUX_MIB_TCPHYSTARTDELAYDETECT);
 				NET_ADD_STATS(sock_net(sk),
@@ -516,164 +547,210 @@ static void hystart_update(struct sock *sk, u32 delay)
 	}
 }
 
-// function to update missed bins
-static void search_update_missed_bins(struct sock *sk)
+/* Scale bin value to fit bin size, rescale previous bins.
+ * Return amount scaled.
+ */
+static inline u8 search_bit_shifting(struct sock *sk, u64 bin_value) 
 {
+
 	struct bictcp *ca = inet_csk_ca(sk);
+	u8 num_shift = 0; 
+	u32 i = 0;
 
-	s32 missed_bin = 0;
-	u32 now_us = bictcp_clock_us(sk);
 
-	missed_bin = (now_us - ca->bin_end_us) / ca->bin_duration_us;
-
-	if (missed_bin > 0) {
-		ca->bin_total += missed_bin;
-		ca->bin_end_us += missed_bin * ca->bin_duration_us;
-
-		if (missed_bin >= SEARCH_TOTAL_BINS)
-		    memset(ca->bin, 0, sizeof(ca->bin));
-
-		else {
-			while(missed_bin >= 0){
-				ca->bin[(ca->bin_total - missed_bin) % SEARCH_TOTAL_BINS] = 0;
-				missed_bin--;
-			}
-		}
+	/* Adjust bin_value if it's greater than MAX_BIN_VALUE */
+	while (bin_value > MAX_US_INT) {
+		num_shift += 1;
+		bin_value >>= 1;  /* divide bin_value by 2 */
 	}
+
+	/* Adjust all previous bins according to the new num_shift */
+	for (i = 0; i < SEARCH_TOTAL_BINS; i++) {
+		ca->search.bin[i] >>= num_shift;
+	}
+
+	/* Update the scale factor */
+	ca->search.scale_factor += num_shift;
+
+	return num_shift;
 }
 
-// Function to calculate delivered bytes for a window considering additional logic
-static inline u64 search_calculate_window_bytes(struct sock *sk, u32 index)
+/* Initialize bin */
+static void search_init_bins(struct sock *sk, u32 now_us, u32 rtt_us)
 {
 	struct bictcp *ca = inet_csk_ca(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
+	u8 amount_scaled = 0; 
+	u64 bin_value = 0;
 
-	u32 i;
-	u64 delivered_bytes = 0;
+	ca->search.bin_duration_us = (rtt_us * search_window_duration_factor) / (SEARCH_BINS * 10);
+	ca->search.bin_end_us = now_us + ca->search.bin_duration_us;
+	ca->search.curr_idx = 0;
 
-	for (i = index - SEARCH_BINS + 1; i <= index; i++)
-		delivered_bytes += ca->bin[i % SEARCH_TOTAL_BINS];
 
-	return delivered_bytes;
+	bin_value = tp->bytes_acked;
+	if (bin_value > MAX_US_INT){
+		amount_scaled = search_bit_shifting(sk, bin_value);
+		bin_value >>= amount_scaled;
+	}
+	ca->search.bin[0] = bin_value;
 }
 
-// Function to handle slow start exit condition
-static void search_exit_slow_start(struct sock *sk, u32 rtt_us)
+/* Update bins */
+static void search_update_bins(struct sock *sk, u32 now_us, u32 rtt_us)
+{
+	struct bictcp *ca = inet_csk_ca(sk);
+	struct tcp_sock *tp = tcp_sk(sk);
+	u32 passed_bins = 0;
+	u32 i = 0;
+	u64 bin_value = 0;
+	u8 amount_scaled = 0; 
+
+	/* If passed_bins greater than 1, it means we have some missed bins */
+	passed_bins = ((now_us - ca->search.bin_end_us) / ca->search.bin_duration_us) + 1;
+
+	/* If we passed more than search_missed_bins_threshold bins, need to reset SEARCH, and initialize bins*/
+	if (passed_bins > search_missed_bins_threshold) {
+		bictcp_search_reset(ca);
+		search_init_bins(sk, now_us, rtt_us);
+		return;
+	}
+
+	for (i = ca->search.curr_idx + 1; i < ca->search.curr_idx + passed_bins; i++)
+		ca->search.bin[i % SEARCH_TOTAL_BINS] = ca->search.bin[ca->search.curr_idx % SEARCH_TOTAL_BINS];
+	
+	ca->search.bin_end_us += passed_bins * ca->search.bin_duration_us;
+	ca->search.curr_idx += passed_bins;
+
+	/* Calculate bin_value by dividing bytes_acked by 2^scale_factor */
+	bin_value = tp->bytes_acked >> ca->search.scale_factor; 
+
+	if (bin_value > MAX_US_INT) {
+		amount_scaled  = search_bit_shifting(sk, bin_value);
+		bin_value >>= amount_scaled;
+	}
+
+	/* Assign the bin_value to the current bin */
+	ca->search.bin[ca->search.curr_idx % SEARCH_TOTAL_BINS] = bin_value;
+}
+
+/* Calculate delivered bytes for a window considering interpolation */
+static inline u64 search_compute_delivered_window(struct sock *sk, s32 left, s32 right, u32 fraction)
+{
+	struct bictcp *ca = inet_csk_ca(sk);
+	u64 delivered = 0;
+
+	delivered = ca->search.bin[(right - 1) % SEARCH_TOTAL_BINS] - ca->search.bin[left % SEARCH_TOTAL_BINS];
+	
+	if (left == 0) /* If we are interpolating using the very first bin, the "previous" bin value is 0. */
+		delivered += (ca->search.bin[left % SEARCH_TOTAL_BINS]) * fraction / 100;
+	else
+		delivered += (ca->search.bin[left % SEARCH_TOTAL_BINS] - ca->search.bin[(left - 1) % SEARCH_TOTAL_BINS]) * fraction / 100;
+
+	delivered += (ca->search.bin[right % SEARCH_TOTAL_BINS] - ca->search.bin[(right - 1) % SEARCH_TOTAL_BINS]) * (100 - fraction) / 100;
+
+	return delivered;
+}
+
+/* Handle slow start exit condition */
+static void search_exit_slow_start(struct sock *sk, u32 now_us, u32 rtt_us)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
-
-	u64 difference_bytes_acked = 0;
-	u32 i = 0;
-	u32 congestion_index = 0;
+	s32 cong_idx = 0;
 	u32 initial_rtt = 0;
+	u64 overshoot_bytes = 0;
+	u32 overshoot_cwnd = 0;
+	
+	/* If cwnd rollback is enabled, the code calculates the initial round-trip time (RTT)
+	 * and determines the congestion index (`cong_idx`) from which to compute the overshoot.
+	 * The overshoot represents the excess bytes delivered beyond the estimated target,
+	 * which is calculated over a window defined by the current and the rollback indices.
+	 * 
+	 * The rollback logic adjusts the congestion window (`snd_cwnd`) based on the overshoot:
+	 * 1. It first computes the overshoot congestion window (`overshoot_cwnd`), derived by
+	 *    dividing the overshoot bytes by the maximum segment size (MSS).
+	 * 2. It reduces `snd_cwnd` by the calculated overshoot while ensuring it does not fall
+	 *    below the initial congestion window (`TCP_INIT_CWND`), which acts as a safety guard.
+	 * 3. If the overshoot exceeds the current congestion window, it resets `snd_cwnd` to the 
+	 *    initial value, providing a safeguard to avoid a drastic drop in case of miscalculations
+	 *    or unusual network conditions (e.g., TCP reset).
+	 * 
+	 * After adjusting the congestion window, the slow start threshold (`snd_ssthresh`) is set 
+	 * to the updated congestion window to finalize the rollback.
+	 */
+	
+	/* If cwnd rollback is enabled */
+ 	if (cwnd_rollback == 1) {
 
-	if (cwnd_rollback == 1) {
-		u32 rollback_cwnd = tp->snd_cwnd;
+ 		initial_rtt = ca->search.bin_duration_us * SEARCH_BINS * 10 / search_window_duration_factor;
+ 		cong_idx = ca->search.curr_idx - ((2 * initial_rtt) / ca->search.bin_duration_us);
 
-		initial_rtt = ca->bin_duration_us * SEARCH_BINS * 10 / search_window_size_time;
-		congestion_index = ca->bin_total - ((2 * initial_rtt) / ca->bin_duration_us);
+ 		/* Calculate the overshoot based on the delivered bytes between cong_idx and the current index */
+ 		overshoot_bytes = search_compute_delivered_window(sk, cong_idx, ca->search.curr_idx, 0);
 
-		if (ca->bin_total - congestion_index > SEARCH_TOTAL_BINS)
-			congestion_index = ca->bin_total - SEARCH_TOTAL_BINS + 1;
+ 		/* Calculate the rollback congestion window based on overshoot divided by MSS */
+ 		overshoot_cwnd = overshoot_bytes / tp->mss_cache;
+		
+ 		/* Reduce the current congestion window (cwnd) with a safety guard:
+		* It doesn't drop below the initial cwnd (TCP_INIT_CWND) or is not 
+		* larger than the current cwnd (e.g., In the case of a TCP reset) 
+  		*/	
+		if (overshoot_cwnd < tp->snd_cwnd)
+			tp->snd_cwnd = max(tp->snd_cwnd - overshoot_cwnd, (u32)TCP_INIT_CWND);
+		else
+			tp->snd_cwnd = TCP_INIT_CWND;
+ 	}
+ 	
+ 	tp->snd_ssthresh = tp->snd_cwnd;
 
-		for (i = congestion_index + 1 ; i <= ca->bin_total; i++)
-			difference_bytes_acked += ca->bin[i % SEARCH_TOTAL_BINS];
-
-		rollback_cwnd = difference_bytes_acked / tp->mss_cache;
-
-		if (rollback_cwnd < tp->snd_cwnd)
-			tp->snd_cwnd = max(TCP_INIT_CWND, tp->snd_cwnd - rollback_cwnd);
-	}
-
-	ca->stop_search = 1;
-	tp->snd_ssthresh = tp->snd_cwnd;
-
-}
-
-// Function to perform interpolation and return the interpolated value
-static u64 search_interpolate_delivered_bytes(struct sock *sk, u32 rtt_us, u32 curr_index, u32 prev_index, u64 left_bytes, u64 right_bytes) {
-
-	struct bictcp *ca = inet_csk_ca(sk);
-	u32 now_us = bictcp_clock_us(sk);
-	u32 time_left = 0, time_right = 0;
-	u64 interpolated_delv_bytes = 0;
-	u32 proportion = 0;
-
-	time_right = ca->bin_end_us - ((curr_index - prev_index) * ca->bin_duration_us);
-	time_left = time_right - ca->bin_duration_us;
-
-	// Check if the time difference for interpolation is non-zero to avoid division by zero
-	if (right_bytes != left_bytes) {
-		// Perform interpolation
-		proportion = ((now_us - rtt_us) - time_left) / ca->bin_duration_us;
-		interpolated_delv_bytes = left_bytes + proportion * (right_bytes - left_bytes);
-	}
-
-	return interpolated_delv_bytes;
+ 	/*  If TCP re-enters slow start, the missed_bin threshold will be 
+  	*   exceeded upon a bin update, and SEARCH will reset automatically. 
+	*/
 }
 
 //////////////////////// SEARCH ////////////////////////
 static void search_update(struct sock *sk, u32 rtt_us)
 {
 
-	struct tcp_sock *tp = tcp_sk(sk);
 	struct bictcp *ca = inet_csk_ca(sk);
 
-	u64 acked_bytes = 0;
-	u32 curr_index = 0;
-	s32 prev_index = 0;
+	s32 prev_idx = 0;
 	u64 curr_delv_bytes = 0, prev_delv_bytes = 0;
-	u64 prev_delv_bytes_under = 0,  prev_delv_bytes_over = 0;
 	s32 norm_diff = 0;
 	u32 now_us = bictcp_clock_us(sk);
+	u32 fraction = 0;
 
 	/* by receiving the first ack packet, initialize bin duration and bin end time */
-	if (ca->bin_duration_us == 0) {
-		ca->bin_duration_us = (rtt_us * search_window_size_time) / (SEARCH_BINS * 10);
-		ca->bin_end_us = now_us + ca->bin_duration_us;
+	if (ca->search.bin_duration_us == 0) {
+		search_init_bins(sk, now_us, rtt_us);
+		return;
 	}
 
 	/* check if it's reached the bin boundary */
-	if (now_us > ca->bin_end_us) {
-		/* Check and update missed bins */
-		search_update_missed_bins(sk);
+	if (now_us > ca->search.bin_end_us) {	
 
-		/* update delivered bytes in bin */
-		acked_bytes = tp->bytes_acked - ca->prev_bytes_acked;
-		ca->bin[ca->bin_total % SEARCH_TOTAL_BINS] = acked_bytes;
-		ca->prev_bytes_acked = tp->bytes_acked;
-
-		/* calculate indices for the current window and previous window after shifting by current RTT */
-		curr_index = ca->bin_total;
-		prev_index = ca->bin_total - (rtt_us/ca->bin_duration_us);
+		/* Update bins */
+		search_update_bins(sk, now_us, rtt_us);
 
 		/* check if there is enough bins after shift for computing previous window */
-		if (prev_index >= SEARCH_BINS && SEARCH_TOTAL_BINS - (curr_index - prev_index) >= SEARCH_BINS) {
+		prev_idx = ca->search.curr_idx - (rtt_us/ca->search.bin_duration_us);
 
+		if (prev_idx >= SEARCH_BINS && (ca->search.curr_idx - prev_idx) < SEARCH_EXTRA_BINS - 1) { 
+			
 			/* Calculate delivered bytes for the current and previous windows */
-			curr_delv_bytes = search_calculate_window_bytes(sk, curr_index);
-			prev_delv_bytes_over = search_calculate_window_bytes(sk, prev_index);
-			prev_delv_bytes_under = search_calculate_window_bytes(sk, prev_index - 1);
-
-			if (do_intpld == 1)
-				prev_delv_bytes = search_interpolate_delivered_bytes(sk, rtt_us, curr_index, prev_index, prev_delv_bytes_under, prev_delv_bytes_over);
-			else
-				prev_delv_bytes = prev_delv_bytes_over;
-
+			curr_delv_bytes = search_compute_delivered_window(sk, ca->search.curr_idx - SEARCH_BINS, ca->search.curr_idx, 0);
+			fraction = ((rtt_us % ca->search.bin_duration_us) * 100 / ca->search.bin_duration_us);
+			prev_delv_bytes = search_compute_delivered_window(sk, prev_idx - SEARCH_BINS, prev_idx, fraction);
 
 			if (prev_delv_bytes > 0) {
 				norm_diff = ((2 * prev_delv_bytes) - curr_delv_bytes)*100 / (2 * prev_delv_bytes);
 
 				/* check for exit condition */
 				if ((2 * prev_delv_bytes) >= curr_delv_bytes && norm_diff >= search_thresh)
-					search_exit_slow_start(sk, rtt_us);
+					search_exit_slow_start(sk, now_us, rtt_us);
 			}
 		}
-
-		/* update bin-related parameters for the next bin */
-		ca->bin_end_us = ca->bin_end_us + ca->bin_duration_us;
-		ca->bin_total++;
-		ca->bin[ca->bin_total % SEARCH_TOTAL_BINS] = 0;
 	}
 }
 //////////////////////////////////////////////////////////////
@@ -701,19 +778,16 @@ static void bictcp_acked(struct sock *sk, const struct ack_sample *sample)
 		ca->delay_min = delay;
 
 	//////////////////////// SEARCH ////////////////////////
-	if (search > 0 && !ca->stop_search) {
-
-		if (!tcp_in_slow_start(tp))
-			ca->stop_search = 1;
-		else
+	if(tcp_in_slow_start(tp)) {
+		if(slow_start_mode == SS_SEARCH) {
 			/* implement search algorithm */
-       		search_update(sk, delay);
-	}
-
-	/* hystart triggers when cwnd is larger than some threshold */
-	if (!ca->found && tcp_in_slow_start(tp) && hystart &&
+			search_update(sk, delay);
+		}
+		else if (slow_start_mode == SS_HYSTART && !ca->hystart.found &&
 	    tp->snd_cwnd >= hystart_low_window)
-		hystart_update(sk, delay);
+			hystart_update(sk, delay);
+
+	}
 }
 
 static struct tcp_congestion_ops cubicsearch __read_mostly = {
