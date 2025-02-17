@@ -199,6 +199,9 @@ __bpf_kfunc static void cubictcp_init(struct sock *sk)
 
 	bictcp_reset(ca);
 
+	if (slow_start_mode == SS_SEARCH)
+		bictcp_search_reset(sk);
+
 	if (slow_start_mode == SS_HYSTART)
 		bictcp_hystart_reset(sk);
 
